@@ -10,6 +10,14 @@ from typing import List
 import yfinance as yf
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib as mpl
+try:
+    mpl.rcParams["font.family"] = ["Hiragino Sans", "Arial Unicode MS", "DejaVu Sans"]
+except Exception:
+    pass
+mpl.rcParams["axes.unicode_minus"] = False
+import matplotlib.dates as mdates
+import matplotlib.ticker as mticker
 
 def update_latest(run_dir: str, output_dir: str):
     """
@@ -213,9 +221,6 @@ def export_price_png(df: pd.DataFrame, ticker_dir: str, ticker: str):
     plt.savefig(out_path, dpi=200)
     plt.close()
 
-
-import matplotlib.dates as mdates
-
 def _format_volume_unit(v: float) -> tuple[float, str]:
     """
     出来高を読みやすい単位に変換（日本株想定）
@@ -231,6 +236,11 @@ def _format_volume_unit(v: float) -> tuple[float, str]:
 def export_price_volume_png(df: pd.DataFrame, ticker_dir: str, ticker: str, interval: str = "1d"):
     """
     株価(終値) + 出来高を2軸で表示してPNG出力（見栄え改善版）
+    - 日付は自動間引き
+    - 出来高は 万株 / 億株 に自動換算
+    - interval=1wk のとき棒を太めに調整
+    - 出来高の目盛りを読みやすく
+    - 棒を背面、価格線を前面に
     """
     required = {"Date", "Close"}
     if not required.issubset(df.columns):
@@ -246,31 +256,20 @@ def export_price_volume_png(df: pd.DataFrame, ticker_dir: str, ticker: str, inte
     if has_volume:
         tmp["Volume"] = pd.to_numeric(df["Volume"], errors="coerce")
 
-    tmp = tmp.dropna(subset=["Date", "Close"])
+    tmp = tmp.dropna(subset=["Date", "Close"]).sort_values("Date")
     if tmp.empty:
         raise ValueError("2軸グラフ用データが空です（Date/Close を確認してください）")
 
     fig, ax_price = plt.subplots(figsize=(12, 6))
 
-    # --- 左軸：株価（線）
-    ax_price.plot(tmp["Date"], tmp["Close"])
-    ax_price.set_xlabel("Date")
-    ax_price.set_ylabel("Close")
-    ax_price.grid(True, axis="y", alpha=0.3)
-
-    # --- 日付の潰れ対策（自動間引き + 見やすいフォーマット）
-    locator = mdates.AutoDateLocator(minticks=5, maxticks=9)
-    ax_price.xaxis.set_major_locator(locator)
-    ax_price.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
-    fig.autofmt_xdate()
-
-    # --- 右軸：出来高（棒）
+    # --- 右軸：出来高（棒）を先に描く（背面にしたいので）
+    unit = None
     if has_volume:
         ax_vol = ax_price.twinx()
 
         vol_series = tmp["Volume"].fillna(0)
-        v_scaled, unit = _format_volume_unit(float(vol_series.max()))
-        # max 기준で単位を決めて、全部同じ単位で割る
+        _, unit = _format_volume_unit(float(vol_series.max()))
+
         if unit == "億株":
             vol_plot = vol_series / 1e8
         elif unit == "万株":
@@ -278,25 +277,57 @@ def export_price_volume_png(df: pd.DataFrame, ticker_dir: str, ticker: str, inte
         else:
             vol_plot = vol_series
 
-        # バー幅：データ間隔（median）から算出（1wkは太め、1dは細め）
+        # バー幅：データ間隔（median）から算出
         dates_num = mdates.date2num(tmp["Date"])
-        if len(dates_num) >= 2:
-            step = float(pd.Series(dates_num).diff().median())
+        step = float(pd.Series(dates_num).diff().median()) if len(dates_num) >= 2 else 1.0
+
+        if interval in ("1wk", "1w"):
+            width = step * 0.90
+        elif interval in ("1mo", "1m"):
+            width = step * 0.95
         else:
-            step = 1.0
+            width = step * 0.70
 
-        width = step * (0.8 if interval in ("1wk", "1w", "1mo") else 0.6)
-
-        ax_vol.bar(tmp["Date"], vol_plot, alpha=0.25, width=width)
+        ax_vol.bar(
+            tmp["Date"],
+            vol_plot,
+            alpha=0.18,   # 薄い→0.25に上げてOK
+            width=width,
+            align="center",
+            zorder=1,
+        )
         ax_vol.set_ylabel(f"Volume ({unit})")
 
-    fig.suptitle(f"{ticker} Close & Volume")
+        # 出来高軸のスケール & 目盛り調整
+        vmax = float(vol_plot.max()) if len(vol_plot) else 0.0
+        ax_vol.set_ylim(0, vmax * 1.10 if vmax > 0 else 1.0)
+        ax_vol.yaxis.set_major_locator(mticker.MaxNLocator(nbins=6))
+    else:
+        ax_vol = None
+
+    # --- 左軸：株価（線）を前面に
+    ax_price.plot(tmp["Date"], tmp["Close"], zorder=3)
+    ax_price.set_xlabel("Date")
+    ax_price.set_ylabel("Close")
+    ax_price.grid(True, axis="y", alpha=0.25)
+
+    # 日付の潰れ対策
+    locator = mdates.AutoDateLocator(minticks=5, maxticks=9)
+    ax_price.xaxis.set_major_locator(locator)
+    ax_price.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+    fig.autofmt_xdate()
+
+    # タイトル（単位が分かると親切）
+    if unit:
+        fig.suptitle(f"{ticker} Close & Volume ({unit})")
+    else:
+        fig.suptitle(f"{ticker} Close")
+
     fig.tight_layout()
 
     out_path = os.path.join(ticker_dir, "price_volume.png")
     plt.savefig(out_path, dpi=200)
     plt.close()
-
 
 def process_one_ticker(ticker: str, run_dir: str, period: str, interval: str) -> dict:
     # 銘柄フォルダ（output/report_xxx/7203.T/）

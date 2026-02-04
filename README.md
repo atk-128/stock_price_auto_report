@@ -64,11 +64,11 @@ python3 main.py \
 
 ## 出力例
 
-実行すると、以下のファイルが自動生成されます。
+### 終値 × 出来高（2軸グラフ）
+![Close & Volume](price_volume.png)
 
-### price.png
-- 終値に **移動平均（MA5 / MA25）** を重ねた価格推移グラフ  
-- トレンド把握用
+### 終値 + 移動平均（MA5 / MA25）
+![MA Graph](price_ma.png)
 
 ### price_volume.png
 - **終値（線） × 出来高（棒）** の2軸グラフ  
